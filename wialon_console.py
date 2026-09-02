@@ -1048,6 +1048,19 @@ class App:
             self._tokgen_flag_checks.append(cb)
 
         self.tokgen_url_var = tk.StringVar(value="")
+
+        # El enlace se recalcula solo con cualquier cambio (portal, app,
+        # usuario, vigencia, permisos) -- antes solo se actualizaba al hacer
+        # clic en "Abrir portal" o "Copiar enlace", asi que si cambiabas un
+        # permiso despues de generarlo una vez, el campo se quedaba viejo.
+        for var in (
+            self.tokgen_portal_var, self.tokgen_client_var, self.tokgen_user_var,
+            self.tokgen_duration_var, self.tokgen_full_access_var,
+        ):
+            var.trace_add("write", lambda *_: self._tokgen_refresh_preview())
+        for flag_var in self.tokgen_flag_vars.values():
+            flag_var.trace_add("write", lambda *_: self._tokgen_refresh_preview())
+
         btn_row = tk.Frame(body, bg=SURFACE)
         btn_row.pack(fill="x", pady=(14, 4))
         ttk.Button(
@@ -1077,10 +1090,15 @@ class App:
             paste_row, text="Usar este token", style="Accent.TButton", command=self._tokgen_use,
         ).pack(side="left", padx=(8, 0))
 
+        self._tokgen_refresh_preview()
+
     def _tokgen_toggle_full_access(self):
         state = "disabled" if self.tokgen_full_access_var.get() else "normal"
         for cb in self._tokgen_flag_checks:
             cb.config(state=state)
+
+    def _tokgen_refresh_preview(self):
+        self.tokgen_url_var.set(self._tokgen_build_url())
 
     def _tokgen_build_url(self):
         duration = next(s for label, s in DURATION_PRESETS if label == self.tokgen_duration_var.get())
@@ -1110,15 +1128,11 @@ class App:
         return f"{portal}/login.html?{query}"
 
     def _tokgen_open(self):
-        url = self._tokgen_build_url()
-        self.tokgen_url_var.set(url)
-        webbrowser.open(url)
+        webbrowser.open(self.tokgen_url_var.get())
 
     def _tokgen_copy(self):
-        url = self.tokgen_url_var.get() or self._tokgen_build_url()
-        self.tokgen_url_var.set(url)
         self.root.clipboard_clear()
-        self.root.clipboard_append(url)
+        self.root.clipboard_append(self.tokgen_url_var.get())
 
     def _tokgen_use(self):
         extracted = extract_token_from_text(self.tokgen_paste_var.get())
