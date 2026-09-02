@@ -46,16 +46,29 @@ EXPECTED_TOKEN_LEN = 72  # "unique token name, 72 symbols" (doc. token/login)
 
 # --- Flags de datos para core/search_items (avl_unit), segun la documentacion
 # oficial (help.wialon.com/.../data-format/units, confirmado contra Item.java /
-# Unit.java del SDK):
-#   base(0x1) + customFields(0x8) + advancedProps/uid-ph-hw(0x100)
-#   + lastMessage(0x400) + sensors(0x1000) + counters(0x2000)
-#   + messageParams(0x100000) + position(0x400000) + profileFields(0x800000)
-UNIT_FLAGS = (
-    0x1 | 0x8 | 0x100 | 0x400 | 0x1000 | 0x2000 | 0x100000 | 0x400000 | 0x800000
-)
+# Unit.java del SDK). Se listan aqui (bit, nombre, que trae) para poder
+# combinarlos Y para mostrarlos tal cual en la pestana de Ayuda del programa.
+UNIT_FLAG_BITS = [
+    (0x1, "Informacion base", "nombre, id y clase de la unidad"),
+    (0x8, "Campos personalizados", "custom fields configurados en Wialon"),
+    (0x100, "Propiedades avanzadas", "UID/IMEI, telefono, tipo de hardware"),
+    (0x400, "Ultimo mensaje y posicion", "ultima posicion GPS, velocidad, hora del ultimo reporte"),
+    (0x1000, "Sensores", "configuracion de sensores (p.ej. el de ignicion)"),
+    (0x2000, "Contadores", "kilometraje y horas de motor acumulados"),
+    (0x100000, "Parametros del mensaje", "parametros crudos del ultimo mensaje (io.*, adc, etc.)"),
+    (0x400000, "Posicion", "coordenadas GPS (duplicado explicito del bit de posicion)"),
+    (0x800000, "Campos de perfil", "marca/modelo/VIN si estan cargados en Wialon"),
+]
+UNIT_FLAGS = sum(bit for bit, _, _ in UNIT_FLAG_BITS)
 
-# Flags de respuesta para token/login: base(0x1) + user(0x2) + token info(0x4)
-LOGIN_FLAGS = 0x1 | 0x2 | 0x4
+# Flags de la RESPUESTA de token/login (que secciones incluye, no el alcance
+# del token). Igual documentados como tabla para reutilizar en Ayuda.
+LOGIN_FLAG_BITS = [
+    (0x1, "Informacion base", "datos generales de la sesion (sid, hora del servidor, etc.)"),
+    (0x2, "Informacion de usuario", "nombre y configuracion del usuario autenticado"),
+    (0x4, "Informacion del token", "objeto 'tk' con vigencia y permisos (si el hosting lo rellena)"),
+]
+LOGIN_FLAGS = sum(bit for bit, _, _ in LOGIN_FLAG_BITS)
 
 # Codigos de error documentados del Remote API
 WIALON_ERRORS = {
@@ -107,6 +120,53 @@ DURATION_PRESETS = [
 ]
 
 SENSOR_NA_VALUE = -348201.3876  # valor "No disponible" documentado para sensores
+
+# Metodos del Remote API que usa esta consola, para la pestana de Ayuda.
+# (svc, descripcion, URL de referencia o None si no aplica)
+API_METHODS_DOC = [
+    (
+        "token/login",
+        "Inicia sesion con el API Key/Token e inaugura la sesion (sid). Se pide con "
+        "fl=7 para traer tambien informacion de usuario y del token.",
+        "https://sdk.wialon.com/wiki/en/sidebar/remoteapi/apiref/token/login",
+    ),
+    (
+        "token/list",
+        "Lista los tokens del usuario conectado (vigencia, permisos, ultimo uso). "
+        "Se usa para mostrar la pestana \"Token\" con datos reales, no supuestos.",
+        "https://sdk.wialon.com/wiki/en/kit/remoteapi/apiref/token/list",
+    ),
+    (
+        "core/search_items",
+        "Busca y trae todas las unidades (avl_unit) con todos sus campos, segun "
+        "los flags de datos solicitados (ver tabla de flags mas abajo).",
+        "https://sdk.wialon.com/wiki/en/sidebar/remoteapi/apiref/core/search_items",
+    ),
+    (
+        "core/get_hw_types",
+        "Traduce el ID numerico de hardware de cada unidad a su nombre comercial, "
+        "para la columna \"Modelo / HW\".",
+        "https://sdk.wialon.com/wiki/en/sidebar/remoteapi/apiref/core/get_hw_types",
+    ),
+    (
+        "unit/calc_last_message",
+        "Calcula el valor real de un sensor (p.ej. el de ignicion) a partir del "
+        "ultimo mensaje, para distinguir Ralenti de Detenida en el KPI.",
+        "https://sdk.wialon.com/wiki/en/sidebar/remoteapi/apiref/unit/calc_last_message",
+    ),
+    (
+        "core/logout",
+        "Cierra la sesion actual (sid) al presionar Desconectar o cerrar la app.",
+        None,
+    ),
+    (
+        "login.html",
+        "No es un metodo del API sino la pagina web de Wialon para generar un "
+        "token nuevo con permisos y vigencia definidos por el usuario (pestana "
+        "\"Token\" -> Generar un token nuevo).",
+        "https://wialon.com/storage/old_en/2015/07/New-Wialon-Authorization-Method_EN.pdf",
+    ),
+]
 
 # ---------------------------------------------------------------------------
 # Paleta y tipografia (un solo acento, base neutra, sin morados de IA)
@@ -699,6 +759,7 @@ class App:
         self._build_kpi_tab()
         self._build_token_tab()
         self._build_log_tab()
+        self._build_help_tab()
 
     def _build_list_tab(self):
         frame = ttk.Frame(self.notebook)
@@ -817,30 +878,41 @@ class App:
         for w in frame.winfo_children():
             w.destroy()
 
-    # ---------- tab Token: vigencia del actual + generador ----------
-
-    def _build_token_tab(self):
+    def _make_scrollable_tab(self, title):
+        """Pestana con scroll vertical (auto-oculto si no hace falta) y con la
+        rueda del mouse acotada a cuando el cursor esta sobre ella."""
         frame = ttk.Frame(self.notebook)
-        self.notebook.add(frame, text="  Token  ")
+        self.notebook.add(frame, text=f"  {title}  ")
 
-        self.token_canvas = tk.Canvas(frame, bg=BG_APP, highlightthickness=0)
-        vsb = AutoScrollbar(frame, orient="vertical", command=self.token_canvas.yview)
-        self.token_canvas.configure(yscrollcommand=vsb.set)
-        self.token_canvas.grid(row=0, column=0, sticky="nsew")
+        canvas = tk.Canvas(frame, bg=BG_APP, highlightthickness=0)
+        vsb = AutoScrollbar(frame, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
 
-        inner = tk.Frame(self.token_canvas, bg=BG_APP)
-        win = self.token_canvas.create_window((0, 0), window=inner, anchor="nw")
-        inner.bind(
-            "<Configure>",
-            lambda e: self.token_canvas.configure(scrollregion=self.token_canvas.bbox("all")),
-        )
-        self.token_canvas.bind(
-            "<Configure>", lambda e: self.token_canvas.itemconfigure(win, width=e.width)
-        )
-        self.token_canvas.bind_all("<MouseWheel>", self._on_token_mousewheel, add="+")
+        inner = tk.Frame(canvas, bg=BG_APP)
+        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
+
+        def on_wheel(event, canvas=canvas):
+            widget = self.root.winfo_containing(event.x_root, event.y_root)
+            w = widget
+            while w is not None:
+                if w is canvas:
+                    canvas.yview_scroll(int(-event.delta / 120), "units")
+                    return
+                w = w.master
+
+        canvas.bind_all("<MouseWheel>", on_wheel, add="+")
+        return inner
+
+    # ---------- tab Token: vigencia del actual + generador ----------
+
+    def _build_token_tab(self):
+        inner = self._make_scrollable_tab("Token")
 
         tk.Label(
             inner, text="Vigencia del token conectado", bg=BG_APP, fg=TEXT_PRIMARY,
@@ -853,15 +925,6 @@ class App:
         self._render_token_status(None)
 
         self._build_token_generator_section(inner)
-
-    def _on_token_mousewheel(self, event):
-        widget = self.root.winfo_containing(event.x_root, event.y_root)
-        w = widget
-        while w is not None:
-            if w is self.token_canvas:
-                self.token_canvas.yview_scroll(int(-event.delta / 120), "units")
-                return
-            w = w.master
 
     def _render_token_status(self, summary):
         self._clear_frame(self.token_status_frame)
@@ -1089,6 +1152,161 @@ class App:
         self.log_text.tag_configure("REQ", foreground=ACCENT_DARK)
         self.log_text.tag_configure("RESP", foreground=SUCCESS)
         self.log_text.tag_configure("ERR", foreground=DANGER)
+
+    # ---------- tab Ayuda: metodos, flags y codigos que usa el programa ----------
+
+    def _help_section_title(self, parent, text):
+        tk.Label(
+            parent, text=text, bg=BG_APP, fg=TEXT_PRIMARY, font=(FONT, 12, "bold"),
+        ).pack(anchor="w", padx=16, pady=(18, 4))
+
+    def _help_card(self, parent):
+        card = tk.Frame(parent, bg=SURFACE, highlightbackground=BORDER, highlightthickness=1)
+        card.pack(fill="x", padx=16, pady=(0, 4))
+        body = tk.Frame(card, bg=SURFACE, padx=16, pady=12)
+        body.pack(fill="x")
+        return body
+
+    def _help_link(self, parent, text, url):
+        lbl = tk.Label(
+            parent, text=text, bg=SURFACE, fg=ACCENT, font=(FONT, 9, "underline"), cursor="hand2",
+        )
+        lbl.pack(anchor="w", pady=(2, 0))
+        lbl.bind("<Button-1>", lambda _e: webbrowser.open(url))
+        return lbl
+
+    def _build_help_tab(self):
+        inner = self._make_scrollable_tab("Ayuda")
+
+        tk.Label(
+            inner, bg=BG_APP, fg=TEXT_MUTED, font=(FONT, 9), justify="left", wraplength=680,
+            text=(
+                "Esta pestana documenta exactamente lo que usa el programa para "
+                "conectarse a Wialon: no son valores de ejemplo, son las mismas "
+                "constantes con las que esta app arma cada peticion."
+            ),
+        ).pack(anchor="w", padx=16, pady=(16, 0))
+
+        # -- Metodos del API --
+        self._help_section_title(inner, "Metodos del API de Wialon que usa esta consola")
+        for svc, desc, url in API_METHODS_DOC:
+            body = self._help_card(inner)
+            tk.Label(
+                body, text=svc, bg=SURFACE, fg=TEXT_PRIMARY, font=(FONT_MONO, 10, "bold"),
+            ).pack(anchor="w")
+            tk.Label(
+                body, text=desc, bg=SURFACE, fg=TEXT_MUTED, font=(FONT, 9), justify="left",
+                wraplength=640, anchor="w",
+            ).pack(anchor="w", pady=(2, 0))
+            if url:
+                self._help_link(body, "Ver documentacion oficial ->", url)
+
+        # -- Flags de unidades --
+        self._help_section_title(inner, "Que trae cada flag de datos de unidades (core/search_items)")
+        body = self._help_card(inner)
+        tk.Label(
+            body, bg=SURFACE, fg=TEXT_MUTED, font=(FONT, 9), justify="left", wraplength=640,
+            text=(
+                "core/search_items recibe un solo numero (\"flags\") que es la suma de los "
+                "bits de lo que quieres que traiga la respuesta. Esta app siempre pide "
+                "todos los siguientes, sumados:"
+            ),
+        ).pack(anchor="w", pady=(0, 8))
+        for bit, name, detail in UNIT_FLAG_BITS:
+            row = tk.Frame(body, bg=SURFACE)
+            row.pack(fill="x", pady=3)
+            tk.Label(
+                row, text=hex(bit), bg=SURFACE, fg=ACCENT_DARK, font=(FONT_MONO, 9, "bold"),
+                width=10, anchor="w",
+            ).pack(side="left")
+            col = tk.Frame(row, bg=SURFACE)
+            col.pack(side="left", fill="x", expand=True)
+            tk.Label(col, text=name, bg=SURFACE, fg=TEXT_PRIMARY, font=(FONT, 9, "bold"), anchor="w").pack(anchor="w")
+            tk.Label(col, text=detail, bg=SURFACE, fg=TEXT_MUTED, font=(FONT, 9), anchor="w", wraplength=520).pack(anchor="w")
+        tk.Frame(body, bg=BORDER, height=1).pack(fill="x", pady=(8, 8))
+        tk.Label(
+            body, text=f"Valor combinado que se envia: {hex(UNIT_FLAGS)} ({UNIT_FLAGS})",
+            bg=SURFACE, fg=TEXT_PRIMARY, font=(FONT_MONO, 9, "bold"), anchor="w",
+        ).pack(anchor="w")
+
+        # -- Flags de token/login --
+        self._help_section_title(inner, "Que incluye la respuesta de token/login")
+        body = self._help_card(inner)
+        for bit, name, detail in LOGIN_FLAG_BITS:
+            row = tk.Frame(body, bg=SURFACE)
+            row.pack(fill="x", pady=3)
+            tk.Label(
+                row, text=hex(bit), bg=SURFACE, fg=ACCENT_DARK, font=(FONT_MONO, 9, "bold"),
+                width=10, anchor="w",
+            ).pack(side="left")
+            col = tk.Frame(row, bg=SURFACE)
+            col.pack(side="left", fill="x", expand=True)
+            tk.Label(col, text=name, bg=SURFACE, fg=TEXT_PRIMARY, font=(FONT, 9, "bold"), anchor="w").pack(anchor="w")
+            tk.Label(col, text=detail, bg=SURFACE, fg=TEXT_MUTED, font=(FONT, 9), anchor="w", wraplength=520).pack(anchor="w")
+        tk.Frame(body, bg=BORDER, height=1).pack(fill="x", pady=(8, 8))
+        tk.Label(
+            body, text=f"Valor combinado que se envia: {hex(LOGIN_FLAGS)} ({LOGIN_FLAGS})",
+            bg=SURFACE, fg=TEXT_PRIMARY, font=(FONT_MONO, 9, "bold"), anchor="w",
+        ).pack(anchor="w")
+
+        # -- Permisos de un token --
+        self._help_section_title(inner, "Permisos que puede tener un token (fl)")
+        body = self._help_card(inner)
+        tk.Label(
+            body, bg=SURFACE, fg=TEXT_MUTED, font=(FONT, 9), justify="left", wraplength=640,
+            text="Estos son los mismos bits que eliges al generar un token en la pestana \"Token\".",
+        ).pack(anchor="w", pady=(0, 8))
+        for bit, desc in TOKEN_ACCESS_FLAGS:
+            row = tk.Frame(body, bg=SURFACE)
+            row.pack(fill="x", pady=2)
+            tk.Label(
+                row, text=hex(bit), bg=SURFACE, fg=ACCENT_DARK, font=(FONT_MONO, 9, "bold"),
+                width=10, anchor="w",
+            ).pack(side="left")
+            tk.Label(row, text=desc, bg=SURFACE, fg=TEXT_PRIMARY, font=(FONT, 9), anchor="w", wraplength=520).pack(
+                side="left", fill="x", expand=True
+            )
+        row = tk.Frame(body, bg=SURFACE)
+        row.pack(fill="x", pady=2)
+        tk.Label(
+            row, text="-1", bg=SURFACE, fg=ACCENT_DARK, font=(FONT_MONO, 9, "bold"), width=10, anchor="w",
+        ).pack(side="left")
+        tk.Label(row, text="Acceso completo (todos los permisos)", bg=SURFACE, fg=TEXT_PRIMARY, font=(FONT, 9), anchor="w").pack(
+            side="left", fill="x", expand=True
+        )
+
+        # -- Como se clasifica el estado --
+        self._help_section_title(inner, "Como se calcula el estado en el KPI")
+        body = self._help_card(inner)
+        for line in (
+            f"Verde (en movimiento): velocidad reportada mayor a {self.MOVING_SPEED_KMH} km/h.",
+            "Gris (sin conexion / sin datos): no hay mensaje, o el ultimo mensaje es mas "
+            "viejo que el umbral \"Sin conexion tras (h)\" de la barra de busqueda.",
+            "Amarillo (ralenti) / Rojo (detenida): con velocidad 0 y conexion reciente, se "
+            "busca en la unidad un sensor de tipo \"engine operation\" (ignicion) y se calcula "
+            "su valor real con unit/calc_last_message. Encendido = ralenti, apagado o sin "
+            "sensor configurado = detenida.",
+        ):
+            tk.Label(
+                body, text=f"- {line}", bg=SURFACE, fg=TEXT_PRIMARY, font=(FONT, 9), justify="left",
+                wraplength=640, anchor="w",
+            ).pack(anchor="w", pady=(0, 6))
+
+        # -- Codigos de error --
+        self._help_section_title(inner, "Codigos de error del Remote API")
+        body = self._help_card(inner)
+        for code, desc in WIALON_ERRORS.items():
+            row = tk.Frame(body, bg=SURFACE)
+            row.pack(fill="x", pady=2)
+            tk.Label(
+                row, text=str(code), bg=SURFACE, fg=ACCENT_DARK, font=(FONT_MONO, 9, "bold"),
+                width=8, anchor="w",
+            ).pack(side="left")
+            tk.Label(row, text=desc, bg=SURFACE, fg=TEXT_PRIMARY, font=(FONT, 9), anchor="w", wraplength=560).pack(
+                side="left", fill="x", expand=True
+            )
+
+        tk.Frame(inner, bg=BG_APP, height=16).pack()
 
     def _build_status_bar(self):
         bar = tk.Frame(self.root, bg=HEAD_ROW_BG)
