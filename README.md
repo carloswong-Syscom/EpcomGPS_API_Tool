@@ -13,3 +13,4 @@ tiempo real una flota conectada a Wialon Remote API.
 - KPI en tarjetas (movimiento / ralenti / detenida / sin conexion)
 - Generador de token con vigencia y permisos configurables
 - Log de la trama cruda para validar la conexion
+<img width="1322" height="826" alt="imagen" src="https://github.com/user-attachments/assets/59535327-c591-47f7-9d7f-bafbd5403baf" />
